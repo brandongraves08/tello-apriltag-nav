@@ -28,9 +28,15 @@ pip install -r requirements.txt
 python -m src.tello_apriltag_follow
 ```
 
+Optional flags:
+```bash
+python -m src.tello_apriltag_follow --tag-id 0 --area-target 9000 --min-battery 25 --max-flight-time 300
+```
+
 ### Controls
 - `t` takeoff
 - `l` land
+- `h` hover/pause autonomy (toggle)
 - `q` quit (lands if flying)
 
 ## Notes / Caveats

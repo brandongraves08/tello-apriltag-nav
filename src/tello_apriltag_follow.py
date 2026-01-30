@@ -17,6 +17,7 @@ This is intentionally minimal and safety-biased.
 
 from __future__ import annotations
 
+import argparse
 import time
 from dataclasses import dataclass
 
@@ -68,8 +69,33 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Tello EDU AprilTag follower")
+    ap.add_argument("--tag-id", type=int, default=None, help="Only follow this tag id (default: largest tag)")
+    ap.add_argument("--area-target", type=float, default=None, help="Target tag pixel area (distance proxy)")
+    ap.add_argument("--min-battery", type=int, default=None, help="Refuse takeoff if battery below this percent")
+    ap.add_argument("--max-flight-time", type=float, default=None, help="Auto-land after N seconds")
+    ap.add_argument("--use-ud", action="store_true", help="Enable up/down centering")
+    ap.add_argument("--no-search", action="store_true", help="Disable search yaw when tag lost")
+    ap.add_argument("--debug", action="store_true", help="Verbose prints")
+    return ap.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     p = Params()
+
+    # Apply CLI overrides
+    if args.tag_id is not None:
+        p.tag_id = args.tag_id
+    if args.area_target is not None:
+        p.area_target = float(args.area_target)
+    if args.min_battery is not None:
+        p.min_battery_to_fly = int(args.min_battery)
+    if args.max_flight_time is not None:
+        p.max_flight_time_s = float(args.max_flight_time)
+    if args.use_ud:
+        p.use_ud = True
 
     detector = Detector(
         families=p.tag_family,
@@ -104,10 +130,12 @@ def main() -> None:
     frame_read = tello.get_frame_read()
 
     flying = False
+    autonomy_enabled = True  # can be paused (panic hover)
     last_seen = 0.0
     takeoff_time = None  # type: float | None
     last_battery_check = 0.0
     battery_pct = None  # type: int | None
+    was_tracking = False
 
     dt_target = 1.0 / p.loop_hz
 
@@ -145,6 +173,7 @@ def main() -> None:
 
             if chosen is not None:
                 last_seen = time.time()
+                was_tracking = True
 
                 # Draw
                 corners = np.int32(chosen.corners)
@@ -178,8 +207,15 @@ def main() -> None:
                         ud = int(clamp(p.ud_k * yerr, -p.ud_max, p.ud_max))
 
             else:
-                # Tag lost: search yaw after a short timeout
-                if flying and (time.time() - last_seen) > p.lost_timeout_s:
+                # Tag lost: stop motion immediately; optionally search by yawing slowly.
+                if was_tracking and flying:
+                    try:
+                        tello.send_rc_control(0, 0, 0, 0)
+                    except Exception:
+                        pass
+                    was_tracking = False
+
+                if flying and not args.no_search and (time.time() - last_seen) > p.lost_timeout_s:
                     yaw = p.search_yaw
 
                 cv2.putText(
@@ -207,9 +243,14 @@ def main() -> None:
                     except Exception:
                         pass
                     flying = False
+                    autonomy_enabled = True
                     takeoff_time = None
                 else:
-                    tello.send_rc_control(lr, fb, ud, yaw)
+                    if autonomy_enabled:
+                        tello.send_rc_control(lr, fb, ud, yaw)
+                    else:
+                        # paused (panic hover)
+                        tello.send_rc_control(0, 0, 0, 0)
 
             # UI
             cv2.line(frame, (int(cx), 0), (int(cx), h), (255, 255, 255), 1)
@@ -227,8 +268,13 @@ def main() -> None:
 
             cv2.imshow("tello-apriltag-nav", frame)
             key = cv2.waitKey(1) & 0xFF
+
             if key == ord("q"):
                 break
+
+            if key == ord("h"):
+                autonomy_enabled = not autonomy_enabled
+                print("Autonomy:", "ON" if autonomy_enabled else "PAUSED (hover)")
             # Periodic battery check (don’t spam)
             now = time.time()
             if (now - last_battery_check) > 5.0:
@@ -249,8 +295,10 @@ def main() -> None:
                     try:
                         tello.takeoff()
                         flying = True
+                        autonomy_enabled = True
                         takeoff_time = time.time()
                         last_seen = time.time()
+                        was_tracking = False
                     except TelloException as e:
                         print("Takeoff failed:", e)
                         print(
