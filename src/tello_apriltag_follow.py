@@ -32,6 +32,10 @@ class Params:
     tag_family: str = "tag36h11"
     tag_id: int | None = None  # set to an int to follow only one tag
 
+    # Safety gates
+    min_battery_to_fly: int = 25  # percent
+    max_flight_time_s: float = 5 * 60  # auto-land after this many seconds
+
     # Control loop
     loop_hz: float = 20.0
 
@@ -101,6 +105,9 @@ def main() -> None:
 
     flying = False
     last_seen = 0.0
+    takeoff_time = None  # type: float | None
+    last_battery_check = 0.0
+    battery_pct = None  # type: int | None
 
     dt_target = 1.0 / p.loop_hz
 
@@ -192,14 +199,25 @@ def main() -> None:
             yaw = int(clamp(yaw, -p.max_rc, p.max_rc))
 
             if flying:
-                tello.send_rc_control(lr, fb, ud, yaw)
+                # Auto-land after max flight time as a simple safety net.
+                if takeoff_time is not None and (time.time() - takeoff_time) > p.max_flight_time_s:
+                    print(f"Max flight time reached ({p.max_flight_time_s}s). Landing...")
+                    try:
+                        tello.land()
+                    except Exception:
+                        pass
+                    flying = False
+                    takeoff_time = None
+                else:
+                    tello.send_rc_control(lr, fb, ud, yaw)
 
             # UI
             cv2.line(frame, (int(cx), 0), (int(cx), h), (255, 255, 255), 1)
             cv2.line(frame, (0, int(cy)), (w, int(cy)), (255, 255, 255), 1)
+            batt_txt = "?" if battery_pct is None else str(battery_pct)
             cv2.putText(
                 frame,
-                f"flying={flying} rc fb={fb} yaw={yaw} ud={ud}",
+                f"flying={flying} batt={batt_txt}% rc fb={fb} yaw={yaw} ud={ud}",
                 (10, h - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
@@ -211,29 +229,52 @@ def main() -> None:
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 break
+            # Periodic battery check (don’t spam)
+            now = time.time()
+            if (now - last_battery_check) > 5.0:
+                last_battery_check = now
+                try:
+                    battery_pct = int(tello.get_battery())
+                except Exception:
+                    pass
+
             if key == ord("t") and not flying:
                 print("TAKEOFF")
-                try:
-                    tello.takeoff()
-                    flying = True
-                    last_seen = time.time()
-                except TelloException as e:
-                    print("Takeoff failed:", e)
-                    print(
-                        "Common causes: already connected in DJI app, low battery, not on level surface, or firewall/VPN blocking UDP. "
-                        "Try: close Tello app, disconnect other devices from drone Wi-Fi, disable VPN, allow Python through Windows Firewall (Private)."
-                    )
-                except Exception as e:
-                    print("Takeoff failed (unexpected):", repr(e))
 
-            if key == ord("l") and flying:
+                if battery_pct is not None and battery_pct < p.min_battery_to_fly:
+                    print(
+                        f"Refusing takeoff: battery {battery_pct}% < {p.min_battery_to_fly}%. Charge first."
+                    )
+                else:
+                    try:
+                        tello.takeoff()
+                        flying = True
+                        takeoff_time = time.time()
+                        last_seen = time.time()
+                    except TelloException as e:
+                        print("Takeoff failed:", e)
+                        print(
+                            "Common causes: already connected in DJI app, low battery, not on level surface, or firewall/VPN blocking UDP. "
+                            "Try: close Tello app, disconnect other devices from drone Wi-Fi, disable VPN, allow Python through Windows Firewall (Private)."
+                        )
+                    except Exception as e:
+                        print("Takeoff failed (unexpected):", repr(e))
+
+            if key == ord("l"):
                 print("LAND")
                 try:
                     tello.land()
                     flying = False
-                except Exception as e:
-                    print("Land failed:", repr(e))
+                    takeoff_time = None
+                except TelloException as e:
+                    # Tello can respond 'error' even if it is already landing/landed.
+                    print("Land returned error:", e)
                     flying = False
+                    takeoff_time = None
+                except Exception as e:
+                    print("Land failed (unexpected):", repr(e))
+                    flying = False
+                    takeoff_time = None
 
             # pace loop
             dt = time.time() - t0
