@@ -39,10 +39,18 @@ python -m src.tello_apriltag_follow --tag-id 0 --area-target 9000 --min-battery 
 - `h` hover/pause autonomy (toggle)
 - `q` quit (lands if flying)
 
+## Mapping
+See `docs/MAPPING.md`.
+
+Quick start:
+- Calibrate camera intrinsics: `python tools/camera_calibrate.py --source tello --rows 6 --cols 9 --square-size-mm 25`
+- Log tag observations (with pose): `python -m src.tag_mapper --tag-size-m 0.12 --calibration calibration.json`
+- Record flight data for offline mapping: `python -m src.tello_record --out recordings/flight1 --fps 15 --detect-tags`
+
 ## Notes / Caveats
 - This is *not* obstacle-avoidance. Fly slow. Keep a hand on “land”.
 - For v1 we use a **pixel-based distance proxy** (tag appears larger = closer). It avoids needing camera calibration.
-- If you want metric pose (meters), we can add camera calibration and use the tag pose estimate.
+- For metric pose (meters), use camera calibration + `--tag-size-m`.
 
 ## License
 MIT
