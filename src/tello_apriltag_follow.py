@@ -240,20 +240,34 @@ def main() -> None:
             if dt < dt_target:
                 time.sleep(dt_target - dt)
 
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt: exiting...")
+
     finally:
-        try:
-            if flying:
-                tello.land()
-        except Exception:
-            pass
+        # Be defensive here: Windows Ctrl+C can interrupt socket calls and
+        # djitellopy's __del__ can throw if cleanup isn't graceful.
         try:
             tello.send_rc_control(0, 0, 0, 0)
         except Exception:
             pass
+
+        try:
+            if flying:
+                # Land can respond 'error' if already on ground; ignore.
+                tello.land()
+        except Exception:
+            pass
+
         try:
             tello.streamoff()
         except Exception:
             pass
+
+        try:
+            tello.end()
+        except Exception:
+            pass
+
         cv2.destroyAllWindows()
 
 
