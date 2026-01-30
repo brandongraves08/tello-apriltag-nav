@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 from djitellopy import Tello
+from djitellopy.tello import TelloException
 from pupil_apriltags import Detector
 
 
@@ -79,7 +80,21 @@ def main() -> None:
     tello = Tello()
     print("Connecting to Tello...")
     tello.connect()
-    print("Battery:", tello.get_battery(), "%")
+
+    # Basic sanity info (helps debug 'error' responses)
+    try:
+        print("Battery:", tello.get_battery(), "%")
+    except Exception:
+        print("Battery: (failed to read)")
+    try:
+        print("Temp:", tello.get_temperature(), "C")
+    except Exception:
+        pass
+    try:
+        print("Height:", tello.get_height(), "cm")
+    except Exception:
+        pass
+    print("Tip: If takeoff returns 'error', close the Tello app/controller, ensure battery >20%, and set Windows Firewall to allow Python on Private networks.")
 
     tello.streamon()
     frame_read = tello.get_frame_read()
@@ -198,13 +213,27 @@ def main() -> None:
                 break
             if key == ord("t") and not flying:
                 print("TAKEOFF")
-                tello.takeoff()
-                flying = True
-                last_seen = time.time()
+                try:
+                    tello.takeoff()
+                    flying = True
+                    last_seen = time.time()
+                except TelloException as e:
+                    print("Takeoff failed:", e)
+                    print(
+                        "Common causes: already connected in DJI app, low battery, not on level surface, or firewall/VPN blocking UDP. "
+                        "Try: close Tello app, disconnect other devices from drone Wi-Fi, disable VPN, allow Python through Windows Firewall (Private)."
+                    )
+                except Exception as e:
+                    print("Takeoff failed (unexpected):", repr(e))
+
             if key == ord("l") and flying:
                 print("LAND")
-                tello.land()
-                flying = False
+                try:
+                    tello.land()
+                    flying = False
+                except Exception as e:
+                    print("Land failed:", repr(e))
+                    flying = False
 
             # pace loop
             dt = time.time() - t0
